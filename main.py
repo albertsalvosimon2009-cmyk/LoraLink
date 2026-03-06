@@ -1,85 +1,99 @@
 """
 LoraLink - Off-grid P2P LoRa Communication System
-Main application file for ESP32 with LoRa radio
+Main application file with AES-128 Encryption
 """
 
 import machine
 import time
+import ucryptolib # Native MicroPython AES library
 from radio import LoraRadio
 from ui import Display
 from keypad import KeypadHandler
 from logger import MessageLogger
 
-# Hardware Configuration
-LORA_MOSI = 23
-LORA_MISO = 19
-LORA_SCK = 18
-LORA_CS = 5
-LORA_RST = 14
-LORA_IRQ = 26
+# Pins configured to avoid GPIO conflicts
+LORA_MOSI, LORA_MISO, LORA_SCK = 23, 19, 18
+LORA_CS, LORA_RST, LORA_IRQ = 5, 14, 2 
 
-OLED_SDA = 21
-OLED_SCL = 22
+OLED_SDA, OLED_SCL = 21, 22
 
-KEYPAD_PINS = [12, 13, 15, 2, 4, 32, 33, 25, 26, 27, 14, 16]  # 3x4 grid
+# 3x4 Matrix Keypad (7-pin scanning configuration)
+KEYPAD_ROWS = [13, 12, 15, 4]
+KEYPAD_COLS = [32, 33, 25]
+
+# AES-128 requires a 16-byte key
+SECRET_KEY = b"HackClubLora123!" 
+
+class Cipher:
+    def __init__(self, key):
+        self.key = key
+
+    def encrypt(self, text):
+        # AES works on 16-byte blocks; padding adds spaces to reach block size
+        pad = 16 - (len(text) % 16)
+        padded_text = text + " " * pad
+        # Initialize AES in ECB mode (Mode 1)
+        crypto = ucryptolib.aes(self.key, 1) 
+        return crypto.encrypt(padded_text)
+
+    def decrypt(self, encrypted_data):
+        try:
+            # Re-initialize AES to decrypt incoming byte stream
+            crypto = ucryptolib.aes(self.key, 1)
+            decrypted = crypto.decrypt(encrypted_data)
+            # Remove padding spaces and convert bytes back to string
+            return decrypted.decode().strip() 
+        except:
+            return "[Decryption Error]"
 
 def main():
-    """Initialize and run LoraLink"""
-    print("LoraLink initializing...")
+    print("LoraLink: Initializing Secure Layer...")
     
-    # Initialize radio
-    radio = LoraRadio(
-        mosi=LORA_MOSI,
-        miso=LORA_MISO,
-        sck=LORA_SCK,
-        cs=LORA_CS,
-        rst=LORA_RST,
-        irq=LORA_IRQ
-    )
+    cipher = Cipher(SECRET_KEY)
     
-    # Initialize display
+    # Setup hardware abstraction layers
+    radio = LoraRadio(mosi=LORA_MOSI, miso=LORA_MISO, sck=LORA_SCK, cs=LORA_CS, rst=LORA_RST, irq=LORA_IRQ)
     i2c = machine.I2C(1, scl=machine.Pin(OLED_SCL), sda=machine.Pin(OLED_SDA))
     display = Display(i2c)
-    
-    # Initialize keypad
-    keypad = KeypadHandler(KEYPAD_PINS)
-    
-    # Initialize logger
+    keypad = KeypadHandler(KEYPAD_ROWS, KEYPAD_COLS)
     logger = MessageLogger()
     
-    # Show startup message
-    display.show_message("LoraLink Ready", "Waiting...")
-    print("LoraLink Ready!")
+    display.show_message("LoraLink SECURE", "Key: AES-128")
     
-    # Main event loop
     while True:
         try:
-            # Check for incoming messages
-            msg = radio.receive()
-            if msg:
-                display.show_incoming(msg)
-                logger.save_message("RX", msg)
-                print(f"Received: {msg}")
+            # Poll radio for encrypted packets
+            encrypted_msg = radio.receive()
+            if encrypted_msg:
+                # Decrypt before displaying to user
+                clear_text = cipher.decrypt(encrypted_msg)
+                display.show_incoming(clear_text)
+                logger.save_message("RX (Secure)", clear_text)
+                print(f"Packet: {encrypted_msg} -> Decoded: {clear_text}")
             
-            # Check keypad input
+            # Scan keypad matrix for new key presses
             key = keypad.get_key()
             if key:
                 display.handle_key(key)
             
-            # Check for send command (e.g., # key)
+            # Check if user pressed '#' to trigger transmission
             if display.ready_to_send():
                 message = display.get_message()
                 if message:
-                    radio.send(message)
+                    # Encrypt string into bytes before sending over the air
+                    encrypted_to_send = cipher.encrypt(message)
+                    radio.send(encrypted_to_send)
+                    
                     display.show_outgoing(message)
-                    logger.save_message("TX", message)
-                    print(f"Sent: {message}")
+                    logger.save_message("TX (Secure)", message)
+                    print(f"Sending Secure Packet: {encrypted_to_send}")
             
+            # Small delay to prevent CPU overclocking
             time.sleep(0.1)
             
         except Exception as e:
-            display.show_error(str(e))
-            print(f"Error: {e}")
+            # Log errors to console and OLED for debugging
+            print(f"System Error: {e}")
             time.sleep(1)
 
 if __name__ == "__main__":
