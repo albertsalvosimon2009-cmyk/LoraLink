@@ -1,18 +1,15 @@
-
 """
-T9-Style Keypad Input Handler
-Manages 3x4 numeric keypad with multi-tap T9 input
+KeypadHandler - Matrix Scanning & T9 Multi-tap Logic
+Handles a 3x4 matrix keypad using 7 GPIO pins.
 """
 
 import machine
 import time
 
 class KeypadHandler:
-    """T9 keypad input handler"""
-    
-    # T9 key mapping
+    # T9 multi-tap character mapping
     T9_MAP = {
-        '1': '.,?!1\'-()      ',
+        '1': '.,?!1',
         '2': 'abc2',
         '3': 'def3',
         '4': 'ghi4',
@@ -22,51 +19,65 @@ class KeypadHandler:
         '8': 'tuv8',
         '9': 'wxyz9',
         '0': ' 0',
-        '*': '+',
-        '#': 'SEND'
+        '*': 'DELETE', # Custom mapping for backspace
+        '#': 'SEND'   # Custom mapping for transmit
     }
-    
-    def __init__(self, pins):
-        """Initialize keypad with GPIO pins (3 rows x 4 cols = 12 pins)"""
-        self.pins = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) for p in pins]
+
+    def __init__(self, row_pins, col_pins):
+        """
+        Initialize 4x3 matrix.
+        Rows are Outputs (driven low), Columns are Inputs (pull-up).
+        """
+        self.row_pins = [machine.Pin(p, machine.Pin.OUT) for p in row_pins]
+        self.col_pins = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) for p in col_pins]
+        
+        # Matrix layout
+        self.keys = [
+            ['1', '2', '3'],
+            ['4', '5', '6'],
+            ['7', '8', '9'],
+            ['*', '0', '#']
+        ]
+        
         self.last_key = None
-        self.last_press_time = 0
-        self.press_count = 0
-        
+        self.last_time = 0
+
     def get_key(self):
-        """Get pressed key (non-blocking, returns None if no press)"""
-        for i, pin in enumerate(self.pins):
-            if pin.value() == 0:  # Pin pulled low = pressed
-                current_time = time.time()
-                
-                # Debounce
-                if i == self.last_key and current_time - self.last_press_time < 0.3:
-                    self.press_count += 1
-                else:
-                    self.press_count = 1
-                    self.last_key = i
-                
-                self.last_press_time = current_time
-                return self._index_to_key(i), self.press_count
+        """
+        Scans the matrix. Returns the character string of the pressed key.
+        Returns None if no key is pressed or for debouncing.
+        """
+        current_key = None
         
-        # Key released
-        if self.last_key is not None:
-            released_key = self._index_to_key(self.last_key)
+        # Iterate through rows to find the pressed button
+        for r_idx, r_pin in enumerate(self.row_pins):
+            r_pin.value(0)  # Drive row LOW
+            for c_idx, c_pin in enumerate(self.col_pins):
+                if c_pin.value() == 0:  # Column pulled LOW means button is pressed
+                    current_key = self.keys[r_idx][c_idx]
+            r_pin.value(1)  # Set row back to HIGH
+            
+        # Basic debouncing and edge detection
+        now = time.ticks_ms()
+        if current_key and current_key != self.last_key:
+            if time.ticks_diff(now, self.last_time) > 200: # 200ms debounce
+                self.last_key = current_key
+                self.last_time = now
+                return current_key
+        
+        if not current_key:
             self.last_key = None
-            return released_key, self.press_count
-        
-        return None, 0
-    
-    def _index_to_key(self, index):
-        """Convert GPIO index to keypad character (0-11 -> 1-9,*,0,#)"""
-        key_map = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#']
-        return key_map[index]
-    
+            
+        return None
+
     def get_char(self, key, press_count):
-        """Get T9 character from key and press count"""
+        """
+        Translates a physical key and tap count into a T9 character.
+        """
         if key not in self.T9_MAP:
-            return None
-        
-        chars = self.T9_MAP[key]
-        idx = (press_count - 1) % len(chars)
-        return chars[idx]
+            return ""
+            
+        options = self.T9_MAP[key]
+        # Cycle through characters based on number of taps
+        idx = (press_count - 1) % len(options)
+        return options[idx]
